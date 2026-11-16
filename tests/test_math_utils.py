@@ -100,3 +100,41 @@ def test_localize_zero_dim_assert():
     scalar_tensor = torch.tensor(1.0)
     with pytest.raises(AssertionError, match="Input tensor must have at least 1 dimension"):
         localize(scalar_tensor)
+
+
+def test_pack_ue8m0_with_last_dimension_stride():
+    # A row-gap slice still has stride(-1) == 1 and does not expose this bug.
+    scales = torch.tensor(
+        [[1.0, 0.5], [2.0, 1.0], [4.0, 2.0], [8.0, 4.0]],
+        dtype=torch.float32,
+    ).T
+    assert scales.shape == (2, 4)
+    assert scales.stride(-1) == 2
+
+    packed = pack_ue8m0_to_int(scales)
+    # UE8M0 exponent bytes are [127, 128, 129, 130] and [126, 127, 128, 129].
+    expected = torch.tensor([[0x8281807F], [0x81807F7E]], dtype=torch.int64).to(torch.int32)
+    assert packed.shape == (2, 1)
+    assert packed.dtype == torch.int32
+    assert torch.equal(packed, expected)
+
+
+def test_unpack_ue8m0_with_last_dimension_stride():
+    # Construct packed values independently of pack_ue8m0_to_int so that a
+    # matching pack/unpack byte-order error cannot hide behind a round trip.
+    packed = torch.tensor(
+        [[0x7E7D7C7B, 0x7F7E7D7C], [0x807F7E7D, 0x81807F7E]],
+        dtype=torch.int64,
+    ).to(torch.int32).T
+    assert packed.shape == (2, 2)
+    assert packed.stride(-1) == 2
+
+    unpacked = unpack_ue8m0_from_int(packed)
+    expected = torch.tensor(
+        [[0.0625, 0.125, 0.25, 0.5, 0.25, 0.5, 1.0, 2.0],
+         [0.125, 0.25, 0.5, 1.0, 0.5, 1.0, 2.0, 4.0]],
+        dtype=torch.float32,
+    )
+    assert unpacked.shape == (2, 8)
+    assert unpacked.dtype == torch.float32
+    assert torch.equal(unpacked, expected)
